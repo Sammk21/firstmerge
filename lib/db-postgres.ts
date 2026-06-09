@@ -284,7 +284,7 @@ export async function analytics(): Promise<Analytics> {
        FROM issues WHERE state='open' GROUP BY language ORDER BY count DESC`
     ),
     q<{ repo_full: string; count: string; stars: string }>(
-      `SELECT i.repo_full AS repo_full, COUNT(*) AS count, COALESCE(r.stars,0) AS stars
+      `SELECT i.repo_full AS repo_full, COUNT(*) AS count, COALESCE(MAX(r.stars),0) AS stars
        FROM issues i LEFT JOIN repos r ON r.id = i.repo_id
        WHERE i.state='open'
        GROUP BY i.repo_full ORDER BY count DESC, stars DESC LIMIT 10`

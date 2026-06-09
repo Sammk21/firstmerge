@@ -41,7 +41,6 @@ async function callGh<T>(
   opts: { bailOnPrimaryLimit?: boolean } = {}
 ): Promise<T> {
   let attempt = 0;
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
       return await fn();
@@ -234,12 +233,12 @@ function repoRowToRaw(r: RepoRow): RawRepo {
   };
 }
 
-export function fetchRepoSignals(fullName: string): Promise<RawRepo> {
+export async function fetchRepoSignals(fullName: string): Promise<RawRepo> {
   // 1. Cross-run cache: if we stored this repo within the last TTL window, reuse
   //    it straight from the DB — zero GitHub calls, even across separate ingest
   //    processes and without Redis.
-  const fresh = getRepoIfFresh(fullName, TTL.repoSignals * 1000);
-  if (fresh) return Promise.resolve(repoRowToRaw(fresh));
+  const fresh = await getRepoIfFresh(fullName, TTL.repoSignals * 1000);
+  if (fresh) return repoRowToRaw(fresh);
 
   // 2. Otherwise resolve once (also memoized in the request/run cache) and fetch.
   //    Repo+PR data is the most expensive part of ingest and changes slowly.

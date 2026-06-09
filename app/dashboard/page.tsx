@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { analytics } from "@/lib/db";
 import { getRateUsage, type RateUsage } from "@/lib/github";
 import { getOrSet } from "@/lib/cache";
@@ -27,7 +28,7 @@ function until(iso: string): string {
 }
 
 export default async function Dashboard() {
-  const a = analytics();
+  const a = await analytics();
 
   let rate: RateUsage | null = null;
   let rateErr: string | null = null;
@@ -45,9 +46,9 @@ export default async function Dashboard() {
     <main className="mx-auto max-w-4xl px-5 py-12">
       <header className="flex items-end justify-between" style={{ animation: "rise 0.6s ease both" }}>
         <div>
-          <a href="/" className="text-[13px] hover:underline" style={{ color: "var(--accent)" }}>
+          <Link href="/" className="text-[13px] hover:underline" style={{ color: "var(--accent)" }}>
             ← FirstMerge
-          </a>
+          </Link>
           <h1 className="mt-3 text-[36px] leading-none" style={{ fontFamily: "var(--serif)", color: "var(--ink)" }}>
             Dashboard
           </h1>

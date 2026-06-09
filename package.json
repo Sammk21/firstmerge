@@ -10,6 +10,7 @@
     "ingest": "tsx scripts/ingest.ts"
   },
   "dependencies": {
+    "@neondatabase/serverless": "^1.1.0",
     "@octokit/rest": "^22.0.1",
     "dotenv": "^17.4.2",
     "next": "16.2.7",

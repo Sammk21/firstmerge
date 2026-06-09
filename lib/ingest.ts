@@ -12,7 +12,16 @@ import { invalidateReadCaches } from "./issues";
 const REVALIDATE_BUDGET = Number(process.env.REVALIDATE_BUDGET ?? 150);
 const REVALIDATE_AFTER_HOURS = Number(process.env.REVALIDATE_AFTER_HOURS ?? 6);
 
-const DEFAULT_LANGUAGES = ["TypeScript", "JavaScript", "Python", "Go", "Rust", "Java"];
+// Steady-drip bounds. Each tick does (languages × pages) Search-API calls; the
+// authenticated Search limit is ~30/min, so the defaults below (6 langs × 1
+// page = 6 search calls, spaced 1.5s apart) sit far under it. Revalidation uses
+// the separate Core bucket (5,000/hr). Override via env if you want a heavier
+// or lighter cadence — keep langs×pages well under ~25 to stay safe.
+const DEFAULT_LANGUAGES = (process.env.INGEST_LANGUAGES?.split(",").map((s) => s.trim()).filter(Boolean)) ?? [
+  "TypeScript", "JavaScript", "Python", "Go", "Rust", "Java",
+];
+const DEFAULT_PAGES = Number(process.env.INGEST_PAGES ?? 1);
+const DEFAULT_PER_PAGE = Number(process.env.INGEST_PER_PAGE ?? 40);
 
 export interface IngestSummary {
   ok: boolean;
@@ -26,6 +35,7 @@ export interface IngestSummary {
 export interface IngestOptions {
   languages?: string[];
   perPage?: number;
+  pages?: number;
   log?: (line: string) => void;
 }
 
@@ -38,7 +48,8 @@ export function isIngestRunning() {
 export async function runIngest(opts: IngestOptions = {}): Promise<IngestSummary> {
   const log = opts.log ?? (() => {});
   const languages = opts.languages ?? DEFAULT_LANGUAGES;
-  const perPage = opts.perPage ?? 40;
+  const perPage = opts.perPage ?? DEFAULT_PER_PAGE;
+  const pages = opts.pages ?? DEFAULT_PAGES;
 
   if (running) {
     return { ok: false, stored: 0, closed: 0, repos: 0, seconds: 0, message: "An ingest is already running." };
@@ -65,7 +76,7 @@ export async function runIngest(opts: IngestOptions = {}): Promise<IngestSummary
       log(`Fetching: ${language}`);
       let issues;
       try {
-        issues = await searchGoodFirstIssues({ languages: [language], perPage, pages: 1 });
+        issues = await searchGoodFirstIssues({ languages: [language], perPage, pages });
       } catch (err) {
         log(`  skipped ${language}: ${(err as Error).message}`);
         continue;
@@ -73,7 +84,7 @@ export async function runIngest(opts: IngestOptions = {}): Promise<IngestSummary
 
       for (const it of issues) {
         if (!seenRepos.has(it.repo.id)) {
-          upsertRepo({
+          await upsertRepo({
             id: it.repo.id,
             full_name: it.repo.fullName,
             stars: it.repo.stars,
@@ -95,7 +106,7 @@ export async function runIngest(opts: IngestOptions = {}): Promise<IngestSummary
           lastCommitAt: it.repo.lastCommitAt,
         });
 
-        upsertIssue({
+        await upsertIssue({
           id: it.id,
           repo_id: it.repo.id,
           repo_full: it.repo.fullName,
@@ -130,7 +141,7 @@ export async function runIngest(opts: IngestOptions = {}): Promise<IngestSummary
 
 async function revalidate(log: (l: string) => void): Promise<number> {
   const cutoff = new Date(Date.now() - REVALIDATE_AFTER_HOURS * 3600 * 1000).toISOString();
-  const candidates = staleOpenIssues(cutoff, REVALIDATE_BUDGET);
+  const candidates = await staleOpenIssues(cutoff, REVALIDATE_BUDGET);
   if (!candidates.length) return 0;
 
   log(`Revalidating ${candidates.length} cached issues…`);
@@ -141,7 +152,7 @@ async function revalidate(log: (l: string) => void): Promise<number> {
       log("  revalidation stopped early (rate limit / network)");
       break;
     }
-    setIssueState(issue.id, state);
+    await setIssueState(issue.id, state);
     if (state === "closed") closedCount++;
   }
   log(`  ${closedCount} now closed (hidden)`);

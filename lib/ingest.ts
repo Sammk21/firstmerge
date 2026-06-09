@@ -8,9 +8,22 @@ import { searchGoodFirstIssues, rateLimitRemaining, getIssueState } from "./gith
 import { computeMergeScore } from "./scoring";
 import { upsertRepo, upsertIssue, staleOpenIssues, setIssueState } from "./db";
 import { invalidateReadCaches } from "./issues";
+import { cacheGet, cacheSet } from "./cache";
 
 const REVALIDATE_BUDGET = Number(process.env.REVALIDATE_BUDGET ?? 150);
 const REVALIDATE_AFTER_HOURS = Number(process.env.REVALIDATE_AFTER_HOURS ?? 6);
+
+// On-demand refresh cooldown. On Vercel Hobby the cron can only run once/day,
+// so we ALSO let page renders trigger a refresh when data is stale — but at most
+// once per this window, scheduled via next/server `after()` so it runs after the
+// response is sent (never blocking the request).
+const ONDEMAND_COOLDOWN_MIN = Number(process.env.ONDEMAND_COOLDOWN_MIN ?? 60);
+
+// The on-demand pass uses a smaller language set than the daily cron so it
+// reliably finishes within the serverless max duration (~60s on Hobby).
+const ONDEMAND_LANGUAGES = (process.env.ONDEMAND_LANGUAGES?.split(",").map((s) => s.trim()).filter(Boolean)) ?? [
+  "TypeScript", "Python", "Rust",
+];
 
 // Steady-drip bounds. Each tick does (languages × pages) Search-API calls; the
 // authenticated Search limit is ~30/min, so the defaults below (6 langs × 1
@@ -157,4 +170,39 @@ async function revalidate(log: (l: string) => void): Promise<number> {
   }
   log(`  ${closedCount} now closed (hidden)`);
   return closedCount;
+}
+
+// ---------------------------------------------------------------------------
+// On-demand background refresh. Schedule this from a page render via
+// next/server `after()` so data stays fresh even on Vercel Hobby (cron limited
+// to once/day). It does not block the response — `after()` runs the callback
+// once the response is sent. A shared cooldown stamp ensures at most one ingest
+// per window, so concurrent visitors never trigger a stampede. The current
+// request serves from cache as usual; subsequent visitors see refreshed data.
+// ---------------------------------------------------------------------------
+
+const ONDEMAND_STAMP_KEY = "ingest:lastTriggered";
+
+export async function maybeRefreshInBackground(): Promise<void> {
+  if (running) return; // an ingest is already in flight in this instance
+  try {
+    const last = await cacheGet<number>(ONDEMAND_STAMP_KEY);
+    const cooldownMs = ONDEMAND_COOLDOWN_MIN * 60 * 1000;
+    if (last && Date.now() - last < cooldownMs) return; // still cooling down
+
+    // Claim the window up-front so concurrent renders don't all trigger. We set
+    // the stamp BEFORE running so a stampede can't slip through the check.
+    // TTL is a touch over the cooldown so the key naturally expires.
+    await cacheSet(ONDEMAND_STAMP_KEY, Date.now(), ONDEMAND_COOLDOWN_MIN * 60 + 60);
+
+    // Run a LIGHTER pass than the daily cron so it reliably finishes within the
+    // serverless function's max duration (~60s on Vercel Hobby). Errors are
+    // logged, never surfaced.
+    await runIngest({
+      languages: ONDEMAND_LANGUAGES,
+      log: (l) => console.log("[ondemand]", l),
+    }).catch((e) => console.warn("[ondemand] ingest failed:", (e as Error).message));
+  } catch {
+    // Cache/trigger problems must never affect the page render.
+  }
 }

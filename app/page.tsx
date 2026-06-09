@@ -1,5 +1,7 @@
+import { after } from "next/server";
 import type { IssueQuery, IssueRow } from "@/lib/db";
 import { getIssues, getLanguages, getStats } from "@/lib/issues";
+import { maybeRefreshInBackground } from "@/lib/ingest";
 import FilterBar from "@/components/FilterBar";
 import ResultsView from "@/components/ResultsView";
 import SupportBanner from "@/components/SupportBanner";
@@ -34,6 +36,10 @@ export default async function Home({
   } catch {
     dbReady = false;
   }
+
+  // Keep data fresh between the once-daily cron runs: after this response is
+  // sent, kick off a throttled background refresh (no-op if within cooldown).
+  if (dbReady) after(() => maybeRefreshInBackground());
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-16 sm:py-20">

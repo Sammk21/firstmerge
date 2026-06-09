@@ -1,8 +1,5 @@
 import Link from "next/link";
 import { analytics } from "@/lib/db";
-import { getRateUsage, type RateUsage } from "@/lib/github";
-import { getOrSet } from "@/lib/cache";
-import RefreshButton from "@/components/RefreshButton";
 
 export const dynamic = "force-dynamic";
 
@@ -20,26 +17,9 @@ function ago(iso: string | null): string {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
-function until(iso: string): string {
-  const secs = Math.floor((new Date(iso).getTime() - Date.now()) / 1000);
-  if (secs <= 0) return "now";
-  if (secs < 60) return `${secs}s`;
-  return `${Math.floor(secs / 60)}m`;
-}
-
 export default async function Dashboard() {
   const a = await analytics();
 
-  let rate: RateUsage | null = null;
-  let rateErr: string | null = null;
-  try {
-    // /rate_limit doesn't consume quota, but cache briefly anyway.
-    rate = await getOrSet("dashboard:rate", 30, () => getRateUsage());
-  } catch (e) {
-    rateErr = (e as Error).message;
-  }
-
-  const cacheBackend = process.env.REDIS_URL ? "Redis" : "In-memory";
   const bandTotal = Math.max(1, a.greenTotal + a.yellowTotal + a.redTotal);
 
   return (
@@ -53,43 +33,10 @@ export default async function Dashboard() {
             Dashboard
           </h1>
         </div>
-        <div className="flex flex-col items-end gap-2">
-          <RefreshButton />
-          <div className="text-right text-[12px]" style={{ color: "var(--ink-faint)" }}>
-            cache: <span style={{ color: "var(--ink-soft)" }}>{cacheBackend}</span>
-            {" · "}last ingest: <span style={{ color: "var(--ink-soft)" }}>{ago(a.lastIngestAt)}</span>
-          </div>
+        <div className="text-right text-[12px]" style={{ color: "var(--ink-faint)" }}>
+          updated <span style={{ color: "var(--ink-soft)" }}>{ago(a.lastIngestAt)}</span>
         </div>
       </header>
-
-      {/* GitHub API usage */}
-      <Section title="GitHub API usage">
-        {rateErr ? (
-          <Note>Couldn&apos;t read rate limits: {rateErr}</Note>
-        ) : rate ? (
-          <>
-            <div className="mb-4 flex items-center gap-2 text-[13px]">
-              <span
-                className="rounded-full px-2.5 py-1"
-                style={{
-                  background: rate.authenticated ? "var(--green-dim)" : "var(--red-dim)",
-                  color: rate.authenticated ? "var(--green)" : "var(--red)",
-                  border: `1px solid ${rate.authenticated ? "var(--green)" : "var(--red)"}33`,
-                }}
-              >
-                {rate.authenticated ? "✓ Authenticated (token active)" : "✗ Unauthenticated — set GITHUB_TOKEN"}
-              </span>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <RateMeter label="Core (repo / issue / PR calls)" b={rate.core} />
-              <RateMeter label="Search (issue queries)" b={rate.search} />
-              {rate.graphql && <RateMeter label="GraphQL" b={rate.graphql} />}
-            </div>
-          </>
-        ) : (
-          <Note>Loading…</Note>
-        )}
-      </Section>
 
       {/* Library analytics */}
       <Section title="Issue library">
@@ -178,7 +125,7 @@ export default async function Dashboard() {
       )}
 
       <footer className="mt-12 text-[12px]" style={{ color: "var(--ink-faint)" }}>
-        {rate ? `Rate data fetched ${ago(rate.fetchedAt)}.` : ""} Numbers reflect the local cache; run an ingest to refresh.
+        Numbers reflect the latest ingest.
       </footer>
     </main>
   );
@@ -205,28 +152,6 @@ function Stat({ n, label, color }: { n: number; label: string; color?: string })
         {fmt(n)}
       </div>
       <div className="mt-1 text-[12px]" style={{ color: "var(--ink-soft)" }}>{label}</div>
-    </div>
-  );
-}
-
-function RateMeter({ label, b }: { label: string; b: { limit: number; used: number; remaining: number; resetAt: string } }) {
-  const pct = b.limit ? (b.used / b.limit) * 100 : 0;
-  const hot = pct > 80;
-  return (
-    <div className="rounded-lg p-3" style={{ background: "var(--bg-soft)", border: "1px solid var(--line)" }}>
-      <div className="flex items-baseline justify-between">
-        <span className="text-[13px]" style={{ color: "var(--ink)" }}>{label}</span>
-        <span className="text-[12px]" style={{ color: "var(--ink-soft)" }}>{fmt(b.remaining)} / {fmt(b.limit)} left</span>
-      </div>
-      <div className="mt-2 h-2 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
-        <span
-          className="block h-full rounded-full"
-          style={{ width: `${pct}%`, background: hot ? "var(--red)" : "var(--green)" }}
-        />
-      </div>
-      <div className="mt-1.5 text-[11px]" style={{ color: "var(--ink-faint)" }}>
-        {fmt(b.used)} used · resets in {until(b.resetAt)}
-      </div>
     </div>
   );
 }

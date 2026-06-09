@@ -3,10 +3,12 @@
 export const config = {
   // Your Buy Me a Coffee username -> https://buymeacoffee.com/<username>
   // Override with env NEXT_PUBLIC_BMC_USERNAME without touching code.
-  buyMeACoffeeUser: process.env.NEXT_PUBLIC_BMC_USERNAME ?? "your-username",
+  buyMeACoffeeUser: process.env.NEXT_PUBLIC_BMC_USERNAME ?? "halalsam",
 
   // Public GitHub repo for the "open source" links.
-  repoUrl: process.env.NEXT_PUBLIC_REPO_URL ?? "https://github.com/your-username/firstmerge",
+  repoUrl:
+    process.env.NEXT_PUBLIC_REPO_URL ??
+    "https://github.com/Sammk21/firstmerge.git",
 };
 
 export const bmcUrl = `https://www.buymeacoffee.com/${config.buyMeACoffeeUser}`;

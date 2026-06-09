@@ -246,7 +246,11 @@ export function queryIssues(q: IssueQuery): IssueRow[] {
     LIMIT @limit
   `;
   params.limit = q.limit ?? 60;
-  return db.prepare(sql).all(params) as IssueRow[];
+  const rows = db.prepare(sql).all(params) as IssueRow[];
+  // better-sqlite3 rows don't have Object.prototype, which Next's RSC
+  // serializer rejects when these cross into a Client Component. Spread each
+  // into a plain object literal so they're safe to pass to the client.
+  return rows.map((r) => ({ ...r }));
 }
 
 export function languages(): string[] {

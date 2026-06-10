@@ -30,7 +30,23 @@ export default function ThemeToggle() {
 
   function toggle() {
     const next: Theme = (theme ?? "light") === "dark" ? "light" : "dark";
-    document.documentElement.setAttribute("data-theme", next);
+
+    const apply = () => {
+      document.documentElement.setAttribute("data-theme", next);
+    };
+
+    // View Transitions gives one GPU-composited crossfade of the whole page —
+    // smooth and cheap, instead of transitioning every element (which lagged).
+    const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const doc = document as Document & {
+      startViewTransition?: (cb: () => void) => void;
+    };
+    if (doc.startViewTransition && !reduce) {
+      doc.startViewTransition(apply);
+    } else {
+      apply();
+    }
+
     try {
       localStorage.setItem("theme", next);
     } catch {

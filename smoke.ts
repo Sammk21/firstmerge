@@ -20,11 +20,11 @@ async function main() {
   await upsertIssue({ id: 999001, repo_id: 999001, repo_full: "demo/active", number: 1,
     title: "Fix typo in README", url: "https://x", language: "Rust", labels: '["good first issue"]',
     comments: 1, created_at: new Date().toISOString(), is_assigned: 0, has_linked_pr: 0,
-    merge_score: good.score, score_band: good.band });
+    linked_pr_count: 0, merge_score: good.score, score_band: good.band });
   await upsertIssue({ id: 999002, repo_id: 999001, repo_full: "demo/active", number: 2,
     title: "Rewrite the scheduler", url: "https://y", language: "Rust", labels: '["good first issue"]',
     comments: 40, created_at: "2023-01-01T00:00:00Z", is_assigned: 1, has_linked_pr: 0,
-    merge_score: bad.score, score_band: bad.band });
+    linked_pr_count: 0, merge_score: bad.score, score_band: bad.band });
 
   await invalidateReadCaches();
 

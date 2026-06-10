@@ -28,6 +28,8 @@ export type {
   IssueInput,
 } from "./db-types";
 
+export { parseIssueQuery } from "./db-types";
+
 const usePostgres = !!process.env.DATABASE_URL;
 
 // One shared module-level promise so the backend is imported exactly once.

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter, useSearchParams, usePathname } from "next/navigation";
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 
 const BANDS = [
   { key: "", label: "All signals" },
@@ -13,7 +13,6 @@ const BANDS = [
 const SORTS = [
   { key: "", label: "Best match" },
   { key: "stars_desc", label: "★ Most popular" },
-  { key: "stars_asc", label: "Least popular" },
   { key: "newest", label: "Newest" },
 ];
 
@@ -43,9 +42,19 @@ export default function FilterBar({
   const band = params.get("band") ?? "";
   const language = params.get("language") ?? "";
   const unclaimed = params.get("unclaimed") === "1";
-  const closed = params.get("closed") === "1";
   const sort = params.get("sort") ?? "";
   const minStars = params.get("minStars") ?? "";
+  const search = params.get("q") ?? "";
+
+  // Debounce typing so we don't refetch on every keystroke.
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onSearch = useCallback(
+    (value: string) => {
+      if (searchTimer.current) clearTimeout(searchTimer.current);
+      searchTimer.current = setTimeout(() => setParam("q", value.trim()), 300);
+    },
+    [setParam]
+  );
 
   return (
     <div className="space-y-3">
@@ -86,6 +95,27 @@ export default function FilterBar({
 
       {/* row 2: selects + toggles */}
       <div className="flex flex-wrap items-center gap-2">
+        {/* keyword search — find issues matching your skills ("docs", "cli", "test") */}
+        <label className="relative inline-flex items-center">
+          <span className="pointer-events-none absolute left-3 text-[12px]" style={{ color: "var(--ink-faint)" }} aria-hidden>
+            ⌕
+          </span>
+          <input
+            type="search"
+            aria-label="Search issue titles"
+            placeholder="Search titles…"
+            defaultValue={search}
+            onChange={(e) => onSearch(e.target.value)}
+            className="w-[150px] rounded-full py-1.5 pl-8 pr-3 text-[13px] outline-none transition-colors focus:w-[200px]"
+            style={{
+              border: `1px solid ${search ? "var(--accent)" : "var(--line)"}`,
+              background: search ? "var(--green-dim)" : "var(--panel)",
+              color: "var(--ink)",
+              transitionProperty: "width, border-color, background-color",
+            }}
+          />
+        </label>
+
         <Dropdown label="Language" value={language} onChange={(v) => setParam("language", v)}
           options={[{ key: "", label: "Any language" }, ...languages.map((l) => ({ key: l, label: l }))]} />
 
@@ -125,20 +155,6 @@ export default function FilterBar({
           )}
         </button>
 
-        {/* show closed/merged issues too (hidden by default) */}
-        <button
-          onClick={() => setParam("closed", closed ? "" : "1")}
-          className="rounded-full px-3.5 py-1.5 text-[13px] transition-colors"
-          style={{
-            border: `1px solid ${closed ? "var(--accent)" : "var(--line)"}`,
-            background: closed ? "var(--green-dim)" : "transparent",
-            color: closed ? "var(--accent)" : "var(--ink-soft)",
-            fontWeight: closed ? 590 : 400,
-          }}
-          title="Include issues that are already closed or merged"
-        >
-          Show closed
-        </button>
       </div>
     </div>
   );

@@ -6,6 +6,7 @@ import type * as SqliteNS from "node:sqlite";
 
 import {
   ORDER_BY,
+  likePattern,
   type RepoRow,
   type IssueRow,
   type IssueQuery,
@@ -61,6 +62,7 @@ db.exec(`
     created_at    TEXT,
     is_assigned   INTEGER DEFAULT 0,
     has_linked_pr INTEGER DEFAULT 0,
+    linked_pr_count INTEGER DEFAULT 0,
     merge_score   INTEGER DEFAULT 0,
     score_band    TEXT DEFAULT 'yellow',
     state         TEXT DEFAULT 'open',
@@ -83,11 +85,14 @@ db.exec(`
   if (!cols.has("state")) db.exec("ALTER TABLE issues ADD COLUMN state TEXT DEFAULT 'open'");
   if (!cols.has("last_seen_at")) db.exec("ALTER TABLE issues ADD COLUMN last_seen_at TEXT");
   if (!cols.has("last_checked_at")) db.exec("ALTER TABLE issues ADD COLUMN last_checked_at TEXT");
+  if (!cols.has("linked_pr_count")) db.exec("ALTER TABLE issues ADD COLUMN linked_pr_count INTEGER DEFAULT 0");
 }
 
 db.exec(`
   CREATE INDEX IF NOT EXISTS idx_issues_state   ON issues(state);
   CREATE INDEX IF NOT EXISTS idx_issues_checked ON issues(last_checked_at);
+  -- covers the default read path: WHERE state='open' ORDER BY merge_score DESC
+  CREATE INDEX IF NOT EXISTS idx_issues_open_score ON issues(state, merge_score DESC);
 `);
 
 // ----- writes --------------------------------------------------------------
@@ -122,16 +127,18 @@ export async function getRepoIfFresh(fullName: string, maxAgeMs: number): Promis
 const upsertIssueStmt = db.prepare(`
   INSERT INTO issues (id, repo_id, repo_full, number, title, url, language,
                       labels, comments, created_at, is_assigned, has_linked_pr,
-                      merge_score, score_band, state, last_seen_at, last_checked_at, fetched_at)
+                      linked_pr_count, merge_score, score_band, state, last_seen_at,
+                      last_checked_at, fetched_at)
   VALUES (@id, @repo_id, @repo_full, @number, @title, @url, @language,
           @labels, @comments, @created_at, @is_assigned, @has_linked_pr,
-          @merge_score, @score_band, 'open', @now, @now, @now)
+          @linked_pr_count, @merge_score, @score_band, 'open', @now, @now, @now)
   ON CONFLICT(id) DO UPDATE SET
     title           = excluded.title,
     labels          = excluded.labels,
     comments        = excluded.comments,
     is_assigned     = excluded.is_assigned,
     has_linked_pr   = excluded.has_linked_pr,
+    linked_pr_count = excluded.linked_pr_count,
     merge_score     = excluded.merge_score,
     score_band      = excluded.score_band,
     state           = 'open',
@@ -169,14 +176,14 @@ export async function setIssueState(id: number, state: "open" | "closed"): Promi
 // ----- reads ---------------------------------------------------------------
 
 export async function queryIssues(q: IssueQuery): Promise<IssueRow[]> {
-  const where: string[] = [];
-  if (!q.includeClosed) where.push("i.state = 'open'");
+  const where: string[] = ["i.state = 'open'"];
   const params: Record<string, unknown> = {};
 
   if (q.language) { where.push("i.language = @language"); params.language = q.language; }
   if (q.band) { where.push("i.score_band = @band"); params.band = q.band; }
   if (q.unclaimedOnly) { where.push("i.is_assigned = 0 AND i.has_linked_pr = 0"); }
   if (q.minStars) { where.push("r.stars >= @minStars"); params.minStars = q.minStars; }
+  if (q.search) { where.push("i.title LIKE @search ESCAPE '\\'"); params.search = likePattern(q.search); }
 
   const orderBy = ORDER_BY[q.sort ?? "score"];
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
@@ -247,6 +254,30 @@ export async function analytics(): Promise<Analytics> {
   ).n;
   const reposTracked = (db.prepare(`SELECT COUNT(*) AS n FROM repos`).get() as { n: number }).n;
 
+  const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
+  const avgScore = Number(
+    (db.prepare(`SELECT AVG(merge_score) AS a FROM issues WHERE state='open'`).get() as { a: number | null }).a ?? 0
+  );
+  const openedLast7d = (
+    db.prepare(`SELECT COUNT(*) AS n FROM issues WHERE state='open' AND created_at >= @t`).get({ t: weekAgo }) as { n: number }
+  ).n;
+  const tierRow = db
+    .prepare(
+      `SELECT
+        SUM(CASE WHEN r.stars < 100 THEN 1 ELSE 0 END) AS t0,
+        SUM(CASE WHEN r.stars >= 100 AND r.stars < 1000 THEN 1 ELSE 0 END) AS t1,
+        SUM(CASE WHEN r.stars >= 1000 AND r.stars < 10000 THEN 1 ELSE 0 END) AS t2,
+        SUM(CASE WHEN r.stars >= 10000 THEN 1 ELSE 0 END) AS t3
+       FROM issues i JOIN repos r ON r.id = i.repo_id WHERE i.state='open'`
+    )
+    .get() as Record<string, number | null>;
+  const starTiers = [
+    { tier: "<100★", count: Number(tierRow.t0 ?? 0) },
+    { tier: "100–1k★", count: Number(tierRow.t1 ?? 0) },
+    { tier: "1k–10k★", count: Number(tierRow.t2 ?? 0) },
+    { tier: "10k+★", count: Number(tierRow.t3 ?? 0) },
+  ];
+
   const byLanguage = (
     db
       .prepare(
@@ -281,5 +312,8 @@ export async function analytics(): Promise<Analytics> {
     byLanguage,
     topRepos,
     freshestVerifiedAt: (base.freshestVerifiedAt as string) ?? null,
+    avgScore: Math.round(avgScore),
+    openedLast7d: Number(openedLast7d),
+    starTiers,
   };
 }

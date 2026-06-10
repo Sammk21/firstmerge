@@ -1,5 +1,5 @@
 import { after } from "next/server";
-import type { IssueQuery, IssueRow } from "@/lib/db";
+import { parseIssueQuery, type IssueRow } from "@/lib/db";
 import { getIssues, getLanguages, getStats } from "@/lib/issues";
 import { maybeRefreshInBackground } from "@/lib/ingest";
 import FilterBar from "@/components/FilterBar";
@@ -16,16 +16,14 @@ export default async function Home({
   searchParams: Promise<Record<string, string | undefined>>;
 }) {
   const sp = await searchParams;
+  const q = parseIssueQuery((k) => sp[k]);
 
-  const q: IssueQuery = {
-    language: sp.language || undefined,
-    band: (sp.band as IssueQuery["band"]) || undefined,
-    unclaimedOnly: sp.unclaimed === "1",
-    minStars: sp.minStars ? Number(sp.minStars) : undefined,
-    sort: (sp.sort as IssueQuery["sort"]) || undefined,
-    includeClosed: sp.closed === "1",
-    limit: 60,
-  };
+  // Feed URL mirroring the active filters, so "Subscribe" keeps your view.
+  const feedParams = new URLSearchParams();
+  for (const k of ["language", "band", "unclaimed", "minStars", "sort", "q"]) {
+    if (sp[k]) feedParams.set(k, sp[k]!);
+  }
+  const feedUrl = `/api/feed${feedParams.size ? `?${feedParams}` : ""}`;
 
   let issues: IssueRow[] = [];
   let langs: string[] = [];
@@ -65,17 +63,17 @@ export default async function Home({
           className="mt-10 max-w-2xl text-[40px] font-semibold leading-[1.07] tracking-[-0.022em] sm:text-[52px]"
           style={{ color: "var(--ink)" }}
         >
-          Good first issues that{" "}
-          <span style={{ color: "var(--accent)" }}>actually get merged.</span>
+          Find a good first issue{" "}
+          <span style={{ color: "var(--accent)" }}>worth your weekend.</span>
         </h1>
 
         <p
           className="mt-5 max-w-xl text-[17px] leading-relaxed tracking-[-0.01em]"
           style={{ color: "var(--ink-soft)" }}
         >
-          Every other tool just lists issues with the label. FirstMerge scores each one on
-          whether your PR will land — filtering out the ones that are already claimed, stale,
-          or owned by maintainers who never merge outside work. Stop getting ghosted.
+          FirstMerge checks every issue before you do — is it still unclaimed, is the repo
+          active, do the maintainers merge outside contributions — and rolls it all into one
+          Merge Score. So the time you give to open source goes into code that lands.
         </p>
 
         {dbReady && s.total > 0 && (
@@ -130,6 +128,14 @@ export default async function Home({
           style={{ color: "var(--ink-soft)" }}
         >
           Open source (MIT)
+        </a>
+        <a
+          href={feedUrl}
+          className="transition-colors hover:text-[color:var(--accent)]"
+          style={{ color: "var(--ink-soft)" }}
+          title="Atom feed of issues matching your current filters"
+        >
+          RSS feed
         </a>
       </footer>
     </main>

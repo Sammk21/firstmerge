@@ -4,7 +4,7 @@
 // scores them, caches them, then revalidates older issues to hide closed ones.
 // ---------------------------------------------------------------------------
 
-import { searchGoodFirstIssues, rateLimitRemaining, getIssueState } from "./github";
+import { searchGoodFirstIssues, rateLimitRemaining, getIssueState, fetchLinkedPrCounts } from "./github";
 import { computeMergeScore } from "./scoring";
 import { upsertRepo, upsertIssue, staleOpenIssues, setIssueState } from "./db";
 import { invalidateReadCaches } from "./issues";
@@ -95,7 +95,16 @@ export async function runIngest(opts: IngestOptions = {}): Promise<IngestSummary
         continue;
       }
 
+      // Competition signal: how many open PRs already target each issue.
+      // Batched GraphQL (~30 issues/call); empty map when no token — counts
+      // default to 0 and the score simply lacks that signal.
+      const prCounts = await fetchLinkedPrCounts(
+        issues.map((it) => ({ repoFull: it.repo.fullName, number: it.number }))
+      );
+
       for (const it of issues) {
+        const linkedPrCount = prCounts.get(`${it.repo.fullName}#${it.number}`) ?? 0;
+        const hasLinkedPr = it.hasLinkedPr || linkedPrCount > 0;
         if (!seenRepos.has(it.repo.id)) {
           await upsertRepo({
             id: it.repo.id,
@@ -111,7 +120,7 @@ export async function runIngest(opts: IngestOptions = {}): Promise<IngestSummary
 
         const { score, band } = computeMergeScore({
           isAssigned: it.isAssigned,
-          hasLinkedPr: it.hasLinkedPr,
+          hasLinkedPr,
           comments: it.comments,
           createdAt: it.createdAt,
           prMergeRate90d: it.repo.prMergeRate90d,
@@ -131,7 +140,8 @@ export async function runIngest(opts: IngestOptions = {}): Promise<IngestSummary
           comments: it.comments,
           created_at: it.createdAt,
           is_assigned: it.isAssigned ? 1 : 0,
-          has_linked_pr: it.hasLinkedPr ? 1 : 0,
+          has_linked_pr: hasLinkedPr ? 1 : 0,
+          linked_pr_count: linkedPrCount,
           merge_score: score,
           score_band: band,
         });

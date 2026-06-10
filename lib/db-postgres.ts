@@ -2,6 +2,7 @@ import { neon } from "@neondatabase/serverless";
 
 import {
   ORDER_BY,
+  likePattern,
   type RepoRow,
   type IssueRow,
   type IssueQuery,
@@ -59,6 +60,7 @@ function ensureSchema(): Promise<void> {
           created_at      TEXT,
           is_assigned     BOOLEAN DEFAULT FALSE,
           has_linked_pr   BOOLEAN DEFAULT FALSE,
+          linked_pr_count INTEGER DEFAULT 0,
           merge_score     INTEGER DEFAULT 0,
           score_band      TEXT DEFAULT 'yellow',
           state           TEXT DEFAULT 'open',
@@ -67,11 +69,15 @@ function ensureSchema(): Promise<void> {
           fetched_at      TEXT NOT NULL
         )
       `);
+      // migration for tables created before this column existed
+      await q(`ALTER TABLE issues ADD COLUMN IF NOT EXISTS linked_pr_count INTEGER DEFAULT 0`);
       await q(`CREATE INDEX IF NOT EXISTS idx_issues_band     ON issues(score_band)`);
       await q(`CREATE INDEX IF NOT EXISTS idx_issues_language ON issues(language)`);
       await q(`CREATE INDEX IF NOT EXISTS idx_issues_score    ON issues(merge_score DESC)`);
       await q(`CREATE INDEX IF NOT EXISTS idx_issues_state    ON issues(state)`);
       await q(`CREATE INDEX IF NOT EXISTS idx_issues_checked  ON issues(last_checked_at)`);
+      // covers the default read path: WHERE state='open' ORDER BY merge_score DESC
+      await q(`CREATE INDEX IF NOT EXISTS idx_issues_open_score ON issues(state, merge_score DESC)`);
     })().catch((e) => {
       // Reset so a transient failure can retry on the next call.
       schemaReady = null;
@@ -97,6 +103,7 @@ function toIssueRow(r: Record<string, unknown>): IssueRow {
     created_at: (r.created_at as string | null) ?? null,
     is_assigned: r.is_assigned ? 1 : 0,
     has_linked_pr: r.has_linked_pr ? 1 : 0,
+    linked_pr_count: Number(r.linked_pr_count ?? 0),
     merge_score: Number(r.merge_score ?? 0),
     score_band: (r.score_band as IssueRow["score_band"]) ?? "yellow",
     state: (r.state as IssueRow["state"]) ?? "open",
@@ -156,14 +163,16 @@ export async function upsertIssue(i: IssueInput): Promise<void> {
   await q(
     `INSERT INTO issues (id, repo_id, repo_full, number, title, url, language,
                          labels, comments, created_at, is_assigned, has_linked_pr,
-                         merge_score, score_band, state, last_seen_at, last_checked_at, fetched_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'open',$15,$15,$15)
+                         linked_pr_count, merge_score, score_band, state, last_seen_at,
+                         last_checked_at, fetched_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'open',$16,$16,$16)
      ON CONFLICT (id) DO UPDATE SET
        title           = EXCLUDED.title,
        labels          = EXCLUDED.labels,
        comments        = EXCLUDED.comments,
        is_assigned     = EXCLUDED.is_assigned,
        has_linked_pr   = EXCLUDED.has_linked_pr,
+       linked_pr_count = EXCLUDED.linked_pr_count,
        merge_score     = EXCLUDED.merge_score,
        score_band      = EXCLUDED.score_band,
        state           = 'open',
@@ -173,7 +182,7 @@ export async function upsertIssue(i: IssueInput): Promise<void> {
     [
       i.id, i.repo_id, i.repo_full, i.number, i.title, i.url, i.language,
       i.labels, i.comments, i.created_at, !!i.is_assigned, !!i.has_linked_pr,
-      i.merge_score, i.score_band, now,
+      i.linked_pr_count, i.merge_score, i.score_band, now,
     ]
   );
 }
@@ -204,15 +213,15 @@ export async function setIssueState(id: number, state: "open" | "closed"): Promi
 
 export async function queryIssues(query: IssueQuery): Promise<IssueRow[]> {
   await ensureSchema();
-  const where: string[] = [];
+  const where: string[] = ["i.state = 'open'"];
   const params: unknown[] = [];
   const p = (v: unknown) => { params.push(v); return `$${params.length}`; };
 
-  if (!query.includeClosed) where.push("i.state = 'open'");
   if (query.language) where.push(`i.language = ${p(query.language)}`);
   if (query.band) where.push(`i.score_band = ${p(query.band)}`);
   if (query.unclaimedOnly) where.push("i.is_assigned = FALSE AND i.has_linked_pr = FALSE");
   if (query.minStars) where.push(`r.stars >= ${p(query.minStars)}`);
+  if (query.search) where.push(`i.title ILIKE ${p(likePattern(query.search))} ESCAPE '\\'`);
 
   const orderBy = ORDER_BY[query.sort ?? "score"];
   const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
@@ -259,8 +268,9 @@ export async function analytics(): Promise<Analytics> {
   await ensureSchema();
   const hourAgo = new Date(Date.now() - 3600 * 1000).toISOString();
   const sixHrAgo = new Date(Date.now() - 6 * 3600 * 1000).toISOString();
+  const weekAgo = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
 
-  const [base, vlh, stale, repos, byLang, top] = await Promise.all([
+  const [base, vlh, stale, repos, byLang, top, extra] = await Promise.all([
     q<Record<string, unknown>>(
       `SELECT
          SUM(CASE WHEN state='open'   THEN 1 ELSE 0 END) AS opentotal,
@@ -289,9 +299,21 @@ export async function analytics(): Promise<Analytics> {
        WHERE i.state='open'
        GROUP BY i.repo_full ORDER BY count DESC, stars DESC LIMIT 10`
     ),
+    q<Record<string, unknown>>(
+      `SELECT
+         COALESCE(AVG(i.merge_score),0) AS avgscore,
+         SUM(CASE WHEN i.created_at >= $1 THEN 1 ELSE 0 END) AS openedlast7d,
+         SUM(CASE WHEN r.stars < 100 THEN 1 ELSE 0 END) AS t0,
+         SUM(CASE WHEN r.stars >= 100 AND r.stars < 1000 THEN 1 ELSE 0 END) AS t1,
+         SUM(CASE WHEN r.stars >= 1000 AND r.stars < 10000 THEN 1 ELSE 0 END) AS t2,
+         SUM(CASE WHEN r.stars >= 10000 THEN 1 ELSE 0 END) AS t3
+       FROM issues i JOIN repos r ON r.id = i.repo_id WHERE i.state='open'`,
+      [weekAgo]
+    ),
   ]);
 
   const b = base[0] ?? {};
+  const x = extra[0] ?? {};
   return {
     openTotal: Number(b.opentotal ?? 0),
     closedTotal: Number(b.closedtotal ?? 0),
@@ -306,5 +328,13 @@ export async function analytics(): Promise<Analytics> {
     byLanguage: byLang.map((r) => ({ language: r.language, count: Number(r.count) })),
     topRepos: top.map((r) => ({ repo_full: r.repo_full, count: Number(r.count), stars: Number(r.stars) })),
     freshestVerifiedAt: (b.freshestverifiedat as string) ?? null,
+    avgScore: Math.round(Number(x.avgscore ?? 0)),
+    openedLast7d: Number(x.openedlast7d ?? 0),
+    starTiers: [
+      { tier: "<100★", count: Number(x.t0 ?? 0) },
+      { tier: "100–1k★", count: Number(x.t1 ?? 0) },
+      { tier: "1k–10k★", count: Number(x.t2 ?? 0) },
+      { tier: "10k+★", count: Number(x.t3 ?? 0) },
+    ],
   };
 }

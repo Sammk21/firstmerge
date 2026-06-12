@@ -125,6 +125,15 @@ export default async function Home({
         >
           Open source (MIT)
         </a>
+        <a
+          href="https://github.com/Sammk21"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="transition-colors hover:text-[color:var(--accent)]"
+          style={{ color: "var(--ink-soft)" }}
+        >
+          GitHub @Sammk21
+        </a>
       </footer>
     </main>
   );

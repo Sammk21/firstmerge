@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test": "tsx --test lib/scoring.test.ts",
     "ingest": "tsx scripts/ingest.ts"
   },
   "dependencies": {

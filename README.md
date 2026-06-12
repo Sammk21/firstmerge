@@ -11,7 +11,11 @@ ghosted.
 100% free to build and run: GitHub's free API + a local SQLite cache. No ads, no
 paywall, MIT licensed.
 
----
+## Screenshots
+
+![FirstMerge homepage showing Merge Score badges](docs/screenshots/homepage.png)
+
+![FirstMerge dashboard showing issue metrics and score distribution](docs/screenshots/dashboard.png)
 
 ## Why it's different
 

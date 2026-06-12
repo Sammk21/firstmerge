@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Script from "next/script";
 import "./globals.css";
+import { Analytics } from "@vercel/analytics/next"
 
 export const metadata: Metadata = {
   title: "FirstMerge — good first issues worth your time",
@@ -22,6 +23,7 @@ export default function RootLayout({
       <Script id="theme-init" strategy="beforeInteractive">
         {`(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||t==='light'){document.documentElement.setAttribute('data-theme',t);}}catch(e){}})();`}
       </Script>
+       <Analytics />
       <body>{children}</body>
     </html>
   );

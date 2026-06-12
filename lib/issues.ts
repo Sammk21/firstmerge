@@ -13,16 +13,14 @@ import {
 } from "./db";
 import { getOrSet, invalidatePrefix, TTL } from "./cache";
 
+// Encodes EVERY field of IssueQuery — if a new filter is added to the type,
+// it is automatically part of the key (forgetting a field here serves stale
+// results for the new filter; that bug already happened once).
 function keyFor(q: IssueQuery): string {
-  return [
-    "issues",
-    q.language ?? "_",
-    q.band ?? "_",
-    q.unclaimedOnly ? "u1" : "u0",
-    q.minStars ?? 0,
-    q.sort ?? "score",
-    q.limit ?? 60,
-  ].join(":");
+  return (
+    "issues:" +
+    JSON.stringify(q, Object.keys(q).sort() as (keyof IssueQuery)[])
+  );
 }
 
 export function getIssues(q: IssueQuery): Promise<IssueRow[]> {

@@ -55,7 +55,14 @@ function signals(issue: IssueRow): { good: boolean; text: string }[] {
   const available = !issue.is_assigned && !issue.has_linked_pr;
   out.push(available
     ? { good: true, text: "Unclaimed — free to take" }
-    : { good: false, text: issue.is_assigned ? "Already assigned" : "Has an open PR" });
+    : {
+        good: false,
+        text: issue.is_assigned
+          ? "Already assigned"
+          : issue.linked_pr_count > 1
+            ? `${issue.linked_pr_count} PRs already racing for this`
+            : "Has an open PR",
+      });
 
   if (issue.stars && issue.stars >= 1000) out.push({ good: true, text: `Popular repo (${starLabel(issue.stars)}★)` });
   else if (issue.stars && issue.stars < 50) out.push({ good: false, text: "Small/quiet repo" });
@@ -137,7 +144,13 @@ export default function IssueCard({
             )}
             {issue.state !== "closed" && (
               <span style={{ color: available ? "var(--green)" : "var(--ink-faint)" }}>
-                {available ? "● unclaimed" : issue.is_assigned ? "○ assigned" : "○ has PR"}
+                {available
+                  ? "● unclaimed"
+                  : issue.is_assigned
+                    ? "○ assigned"
+                    : issue.linked_pr_count > 0
+                      ? `○ ${issue.linked_pr_count} open PR${issue.linked_pr_count > 1 ? "s" : ""}`
+                      : "○ has PR"}
               </span>
             )}
             {issue.language && <span>· {issue.language}</span>}

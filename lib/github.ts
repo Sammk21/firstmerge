@@ -41,7 +41,6 @@ async function callGh<T>(
   opts: { bailOnPrimaryLimit?: boolean } = {}
 ): Promise<T> {
   let attempt = 0;
-  // eslint-disable-next-line no-constant-condition
   while (true) {
     try {
       return await fn();
@@ -234,12 +233,12 @@ function repoRowToRaw(r: RepoRow): RawRepo {
   };
 }
 
-export function fetchRepoSignals(fullName: string): Promise<RawRepo> {
+export async function fetchRepoSignals(fullName: string): Promise<RawRepo> {
   // 1. Cross-run cache: if we stored this repo within the last TTL window, reuse
   //    it straight from the DB — zero GitHub calls, even across separate ingest
   //    processes and without Redis.
-  const fresh = getRepoIfFresh(fullName, TTL.repoSignals * 1000);
-  if (fresh) return Promise.resolve(repoRowToRaw(fresh));
+  const fresh = await getRepoIfFresh(fullName, TTL.repoSignals * 1000);
+  if (fresh) return repoRowToRaw(fresh);
 
   // 2. Otherwise resolve once (also memoized in the request/run cache) and fetch.
   //    Repo+PR data is the most expensive part of ingest and changes slowly.
@@ -259,9 +258,10 @@ async function fetchRepoSignalsUncached(fullName: string): Promise<RawRepo> {
   // last commit on default branch
   const lastCommitAt: string | null = repo.pushed_at ?? null;
 
-  // recent closed PRs -> merge rate (sample the last ~30)
+  // recent closed PRs -> merge rate + responsiveness (sample the last ~30).
+  // Both signals come from the SAME response — one API call, two signals.
   let prMergeRate90d: number | null = null;
-  const medianResponseHrs: number | null = null;
+  let medianResponseHrs: number | null = null;
   try {
     const prs = await callGh(
       `pulls ${fullName}`,
@@ -283,6 +283,21 @@ async function fetchRepoSignalsUncached(fullName: string): Promise<RawRepo> {
     if (recent.length) {
       const merged = recent.filter((p: { merged_at: string | null }) => p.merged_at).length;
       prMergeRate90d = merged / recent.length;
+
+      // Responsiveness proxy: median hours from PR opened -> decision
+      // (merged or closed). Cheap and well-correlated with "will a maintainer
+      // ever look at my PR" — and free, since we already have these rows.
+      const decisionHrs = recent
+        .map((p: { created_at: string; closed_at: string | null; merged_at: string | null }) => {
+          const end = p.merged_at ?? p.closed_at;
+          if (!end) return null;
+          return (new Date(end).getTime() - new Date(p.created_at).getTime()) / 3_600_000;
+        })
+        .filter((h): h is number => h != null && h >= 0)
+        .sort((a, b) => a - b);
+      if (decisionHrs.length) {
+        medianResponseHrs = decisionHrs[Math.floor(decisionHrs.length / 2)];
+      }
     }
   } catch {
     // private/rate-limited — leave null, scorer treats unknown gracefully
@@ -297,6 +312,84 @@ async function fetchRepoSignalsUncached(fullName: string): Promise<RawRepo> {
     prMergeRate90d,
     medianResponseHrs,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Linked-PR counts. "How many open PRs already target this issue?" is the
+// competition signal: 3 people racing on one good-first-issue means your PR
+// probably won't be the one merged. GitHub's REST API can't answer this
+// cheaply, but GraphQL can — and we batch ~30 issues per query via aliases,
+// so a full ingest costs only a handful of GraphQL points.
+//
+// GraphQL REQUIRES a token. Without GITHUB_TOKEN we return an empty map and
+// counts stay 0 — same graceful degradation as the other repo signals.
+// ---------------------------------------------------------------------------
+
+const PR_COUNT_BATCH = 30;
+
+interface TimelineNode {
+  source?: { __typename?: string; number?: number; state?: string } | null;
+}
+
+/**
+ * For each issue, count DISTINCT open PRs that cross-reference it.
+ * Returns a map keyed "owner/name#number" -> count. Best-effort: issues that
+ * error (deleted, access denied) are simply absent from the map.
+ */
+export async function fetchLinkedPrCounts(
+  issues: { repoFull: string; number: number }[]
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  if (!process.env.GITHUB_TOKEN || issues.length === 0) return out;
+
+  for (let i = 0; i < issues.length; i += PR_COUNT_BATCH) {
+    const batch = issues.slice(i, i + PR_COUNT_BATCH);
+    const parts = batch.map((iss, idx) => {
+      const [owner, name] = iss.repoFull.split("/");
+      // String literals are JSON-escaped; owner/name/number come from the
+      // GitHub API itself, not user input.
+      return `i${idx}: repository(owner: ${JSON.stringify(owner)}, name: ${JSON.stringify(name)}) {
+        issue(number: ${iss.number}) {
+          timelineItems(itemTypes: [CROSS_REFERENCED_EVENT], last: 50) {
+            nodes { ... on CrossReferencedEvent { source { __typename ... on PullRequest { number state } } } }
+          }
+        }
+      }`;
+    });
+
+    try {
+      const res = await callGh(
+        `prCounts batch ${i / PR_COUNT_BATCH + 1}`,
+        () =>
+          octokit.request("POST /graphql", {
+            query: `query { ${parts.join("\n")} }`,
+          }),
+        { bailOnPrimaryLimit: true }
+      );
+      // GraphQL returns partial data + errors; use whatever came back.
+      const data = (res.data as { data?: Record<string, unknown> }).data ?? {};
+      batch.forEach((iss, idx) => {
+        const repo = data[`i${idx}`] as
+          | { issue?: { timelineItems?: { nodes?: TimelineNode[] } } | null }
+          | null
+          | undefined;
+        const nodes = repo?.issue?.timelineItems?.nodes;
+        if (!nodes) return;
+        const openPrs = new Set<number>();
+        for (const n of nodes) {
+          if (n?.source?.__typename === "PullRequest" && n.source.state === "OPEN" && n.source.number != null) {
+            openPrs.add(n.source.number);
+          }
+        }
+        out.set(`${iss.repoFull}#${iss.number}`, openPrs.size);
+      });
+    } catch (e) {
+      // Rate-limited or transient failure — keep whatever batches succeeded.
+      console.warn(`[gh] prCounts: batch failed, continuing (${(e as Error).message})`);
+      break;
+    }
+  }
+  return out;
 }
 
 /** Remaining search-API budget, so the ingest job can back off politely. */

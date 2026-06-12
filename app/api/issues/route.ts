@@ -1,19 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import type { IssueQuery } from "@/lib/db";
+import { parseIssueQuery } from "@/lib/db";
 import { getIssues } from "@/lib/issues";
 
-// GET /api/issues?language=Rust&band=green&unclaimed=1&minStars=100&limit=60
+// GET /api/issues?language=Rust&band=green&unclaimed=1&minStars=100&sort=newest&limit=60
+// Params are validated by parseIssueQuery (shared with the homepage): unknown
+// band/sort values are ignored, limit is clamped, numbers are sanitized.
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
-
-  const q: IssueQuery = {
-    language: sp.get("language") || undefined,
-    band: (sp.get("band") as IssueQuery["band"]) || undefined,
-    unclaimedOnly: sp.get("unclaimed") === "1",
-    minStars: sp.get("minStars") ? Number(sp.get("minStars")) : undefined,
-    sort: (sp.get("sort") as IssueQuery["sort"]) || undefined,
-    limit: sp.get("limit") ? Number(sp.get("limit")) : 60,
-  };
+  const q = parseIssueQuery((k) => sp.get(k));
 
   try {
     const rows = await getIssues(q);

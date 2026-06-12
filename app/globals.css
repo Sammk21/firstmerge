@@ -116,9 +116,21 @@ body {
   min-height: 100vh;
 }
 
-/* Gentle cross-fade when toggling theme (skipped for reduced-motion below). */
-html, body, [data-theme] * {
-  transition: background-color 0.25s ease, border-color 0.25s ease, color 0.25s ease;
+/*
+ * Theme toggle uses the View Transitions API (see ThemeToggle.tsx) for a single
+ * GPU-composited crossfade of the whole page. We deliberately do NOT put a CSS
+ * transition on every element — animating thousands of nodes at once was the
+ * cause of the toggle lag. Only the page canvas gets a tiny fade as a fallback
+ * for browsers without View Transitions.
+ */
+html, body {
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+/* Tune the View Transitions crossfade duration. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.22s;
 }
 
 a { color: inherit; text-decoration: none; }
@@ -149,6 +161,13 @@ a { color: inherit; text-decoration: none; }
   background: var(--bg);
 }
 
+/* Repo-group chevron: points right when collapsed, down when open. The
+   transition is scoped to this one element (see gotcha: never transition
+   everything). */
+details[open] > summary .group-chevron {
+  transform: rotate(90deg);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -156,5 +175,9 @@ a { color: inherit; text-decoration: none; }
     animation-duration: 0.001ms !important;
     animation-delay: 0ms !important;
     transition-duration: 0.001ms !important;
+  }
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none !important;
   }
 }
